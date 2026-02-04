@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/database";
+import { saveLink, getLink } from "@/lib/database";
 import { generateShortCode, isValidUrl } from "@/lib/nanoid";
 
 export async function POST(request: NextRequest) {
@@ -16,12 +16,12 @@ export async function POST(request: NextRequest) {
 
     do {
       code = generateShortCode();
-      const existing = await db.getLink(code);
+      const existing = await getLink(code);
       if (!existing) break;
       attempts++;
     } while (attempts < maxAttempts);
 
-    const link = await db.createLink(code, url);
+    const link = await saveLink(code, url);
     const ghostLink = new URL(`/l/${code}`, request.url).toString();
     const statsLink = new URL(`/stats/${code}`, request.url).toString();
 
@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
       code,
       ghostLink,
       statsLink,
-      originalUrl: link.originalUrl,
+      originalUrl: link.destinationUrl,
       createdAt: link.createdAt
     });
   } catch (error) {
