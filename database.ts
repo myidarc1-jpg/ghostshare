@@ -1,132 +1,64 @@
 import { promises as fs } from "fs"
 import path from "path"
-import type { GhostLink, LinkStats, Database } from "./types"
 
-export interface DatabaseAdapter {
-  createLink(code: string, originalUrl: string): Promise<GhostLink>
-  getLink(code: string): Promise<GhostLink | null>
-  updateStats(code: string, isPrivateShare: boolean, source?: string): Promise<void>
-  getStats(code: string): Promise<LinkStats | null>
+export interface Link {
+  id: string
+  code: string
+  destinationUrl: string
+  createdAt: string
+  clicks: number
+  shares: number
 }
 
-export class MockDatabaseAdapter implements DatabaseAdapter {
-  private dbPath: string
-  private dbCache: Database | null = null
-  private lock: Promise<unknown> = Promise.resolve()
+const DB_PATH = path.join(process.cwd(), "links.json")
 
-  constructor(dbPath: string) {
-    this.dbPath = path.resolve(dbPath)
-  }
-
-  private async readDatabase(): Promise<Database> {
-    if (this.dbCache !== null) return this.dbCache
-    try {
-      const content = await fs.readFile(this.dbPath, "utf-8")
-      this.dbCache = JSON.parse(content) as Database
-      return this.dbCache
-    } catch (error) {
-      this.dbCache = { links: {}, stats: {} }
-      return this.dbCache
-    }
-  }
-
-  private async writeDatabase(db: Database): Promise<void> {
-    this.dbCache = db
-    await fs.writeFile(this.dbPath, JSON.stringify(db, null, 2), "utf-8")
-  }
-
-  async createLink(code: string, originalUrl: string): Promise<GhostLink> {
-    const lock = this.lock
-    const task = (async () => {
-      await lock
-      const db = await this.readDatabase()
-      const now = new Date().toISOString()
-      const link: GhostLink = {
-        id: crypto.randomUUID(),
-        code,
-        originalUrl,
-        createdAt: now
-      }
-      db.links[code] = link
-      db.stats[code] = {
-        code,
-        humanClicks: 0,
-        privateShares: 0,
-        totalClicks: 0,
-        lastTrackedAt: now,
-        trackingData: {
-          sources: {},
-          hourly: new Array(24).fill(0),
-          daily: new Array(7).fill(0)
-        }
-      }
-      await this.writeDatabase(db)
-      return link
-    })()
-    this.lock = task
-    return task
-  }
-
-  async getLink(code: string): Promise<GhostLink | null> {
-    const db = await this.readDatabase()
-    return db.links[code] || null
-  }
-
-  async updateStats(code: string, isPrivateShare: boolean, source?: string): Promise<void> {
-    const lock = this.lock
-    const task = (async () => {
-      await lock
-      const db = await this.readDatabase()
-      const stats = db.stats[code]
-      if (!stats) return
-
-      const now = new Date()
-      const hourIndex = now.getHours()
-      const dayIndex = now.getDay()
-
-      if (isPrivateShare) {
-        stats.privateShares += 1
-        stats.trackingData.hourly[hourIndex] += 1
-        stats.trackingData.daily[dayIndex] += 1
-        if (source) {
-          stats.trackingData.sources[source] = (stats.trackingData.sources[source] || 0) + 1
-        }
-      } else {
-        stats.humanClicks += 1
-        stats.trackingData.hourly[hourIndex] += 1
-        stats.trackingData.daily[dayIndex] += 1
-        if (source) {
-          stats.trackingData.sources[source] = (stats.trackingData.sources[source] || 0) + 1
-        }
-      }
-
-      stats.totalClicks = stats.humanClicks + stats.privateShares
-      stats.lastTrackedAt = now.toISOString()
-      await this.writeDatabase(db)
-    })()
-    this.lock = task
-    return task
-  }
-
-  async getStats(code: string): Promise<LinkStats | null> {
-    const db = await this.readDatabase()
-    return db.stats[code] || null
+export async function getLinks(): Promise<Link[]> {
+  try {
+    const content = await fs.readFile(DB_PATH, "utf-8")
+    return JSON.parse(content) as Link[]
+  } catch {
+    return []
   }
 }
 
-export const db = new MockDatabaseAdapter("./src/data/database.json")
+export async function getLink(code: string): Promise<Link | null> {
+  const links = await getLinks()
+  return links.find(link => link.code === code) || null
+}
 
-export class SupabaseDatabaseAdapter implements DatabaseAdapter {
-  async createLink(_code: string, _originalUrl: string): Promise<GhostLink> {
-    throw new Error("Not implemented yet - Phase 2+")
+export async function saveLink(code: string, destinationUrl: string): Promise<Link> {
+  const links = await getLinks()
+  
+  const link: Link = {
+    id: crypto.randomUUID(),
+    code,
+    destinationUrl,
+    createdAt: new Date().toISOString(),
+    clicks: 0,
+    shares: 0
   }
-  async getLink(_code: string): Promise<GhostLink | null> {
-    throw new Error("Not implemented yet - Phase 2+")
+  
+  links.push(link)
+  await fs.writeFile(DB_PATH, JSON.stringify(links, null, 2), "utf-8")
+  
+  return link
+}
+
+export async function updateStats(code: string, userAgent: string): Promise<Link | null> {
+  const links = await getLinks()
+  const linkIndex = links.findIndex(link => link.code === code)
+  
+  if (linkIndex === -1) return null
+  
+  const isBot = /WhatsApp|Telegram|Discord|Slack|Twitterbot/i.test(userAgent)
+  
+  if (isBot) {
+    links[linkIndex].shares += 1
+  } else {
+    links[linkIndex].clicks += 1
   }
-  async updateStats(_code: string, _isPrivateShare: boolean, _source?: string): Promise<void> {
-    throw new Error("Not implemented yet - Phase 2+")
-  }
-  async getStats(_code: string): Promise<LinkStats | null> {
-    throw new Error("Not implemented yet - Phase 2+")
-  }
+  
+  await fs.writeFile(DB_PATH, JSON.stringify(links, null, 2), "utf-8")
+  
+  return links[linkIndex]
 }
